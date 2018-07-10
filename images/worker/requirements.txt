@@ -1,0 +1,5 @@
+asyncio-nats-client
+requests
+redis
+asyncio_redis
+aiohttp

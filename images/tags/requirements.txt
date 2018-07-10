@@ -1,0 +1,8 @@
+gunicorn
+psycopg2
+requests
+aiohttp
+aiopg
+peewee_async
+peewee<=2.10.2
+asyncpg

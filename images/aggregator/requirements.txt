@@ -1,0 +1,7 @@
+asyncio-nats-client
+gunicorn
+requests
+aiohttp
+redis
+python-logstash-async
+aiologstash

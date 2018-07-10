@@ -1,0 +1,186 @@
+version: "3"
+
+services:
+
+  ### Services itself
+  campaigns:
+    build:
+      context: ./
+      dockerfile: ./images/campaigns/Dockerfile
+    depends_on:
+      - postgres
+    volumes:
+      - ./src/campaigns:/project
+      - ./log/campaigns:/var/log/
+#    ports:
+#      - "10000:9001"
+    working_dir: /project
+    command: "gunicorn -w 4 -b campaigns:80 --access-logfile=/var/log/access.log --error-logfile=/var/log/error.log --log-level=info campaigns.wsgi"
+
+  stats:
+    build:
+      context: ./
+      dockerfile: ./images/stats/Dockerfile
+    depends_on:
+      - postgres
+    volumes:
+      - ./src/stats:/project
+      - ./log/stats:/var/log/
+    working_dir: /project
+#    ports:
+#      - "10000:80"
+    command: "gunicorn -w 4 -b stats:80 --access-logfile=/var/log/access.log --error-logfile=/var/log/error.log --log-level=info --worker-class aiohttp.GunicornWebWorker stats:run"
+
+  tags:
+    build:
+      context: ./
+      dockerfile: ./images/tags/Dockerfile
+    depends_on:
+      - postgres
+    volumes:
+      - ./src/tags:/project
+      - ./log/tags:/var/log/
+    working_dir: /project
+#    ports:
+#      - "9000:9003"
+    command: "gunicorn -w 4 -b tags:80 --access-logfile=/var/log/access.log --error-logfile=/var/log/error.log --log-level=info --worker-class aiohttp.GunicornWebWorker tags:run"
+
+
+  ### Workers for services
+  campaigns_worker:
+    build:
+      context: ./
+      dockerfile: ./images/worker/Dockerfile
+    depends_on:
+      - mq
+      - campaigns
+    env_file:
+      - .env
+    environment:
+      - SUBJECT_NAME=${CAMPAIGNS_SUBJECT_NAME}
+      - REQUEST_URL=${CAMPAIGNS_REQUEST_URL}
+    volumes:
+      - ./src/worker:/project
+      - ./log/campaigns_worker:/var/log/
+    command: ["python", "app.py"]
+
+  stats_worker:
+    build:
+      context: ./
+      dockerfile: ./images/worker/Dockerfile
+    depends_on:
+      - mq
+      - stats
+    env_file:
+      - .env
+    environment:
+      - SUBJECT_NAME=${STATS_SUBJECT_NAME}
+      - REQUEST_URL=${STATS_REQUEST_URL}
+    volumes:
+      - ./src/worker:/project
+      - ./log/stats_worker:/var/log/
+    command: ["python", "app.py"]
+
+
+  tags_worker:
+    build:
+      context: ./
+      dockerfile: ./images/worker/Dockerfile
+    depends_on:
+      - mq
+      - tags
+    env_file:
+      - .env
+    environment:
+      - SUBJECT_NAME=${TAGS_SUBJECT_NAME}
+      - REQUEST_URL=${TAGS_REQUEST_URL}
+    volumes:
+      - ./src/worker:/project
+      - ./log/tags_worker:/var/log/
+    command: ["python", "app.py"]
+
+
+  ### Aggregator service
+  aggregator:
+    build:
+      context: ./
+      dockerfile: ./images/aggregator/Dockerfile
+    depends_on:
+      - mq
+      - redis
+      - campaigns_worker
+      - stats_worker
+      - tags_worker
+    volumes:
+      - ./src/aggregator:/project
+      - ./log/aggregator:/var/log/
+    env_file:
+      - .env
+    working_dir: /project
+    ports:
+      - "9000:9004"
+    command: "gunicorn -w 4 -b 0.0.0.0:9004 --access-logfile=/var/log/access.log --error-logfile=/var/log/error.log --log-level=info --worker-class aiohttp.GunicornWebWorker aggregator:run"
+
+
+  ### Data stores and message queue
+  postgres:
+    image: postgres:10.3-alpine
+    volumes:
+      - ./data/pgdata:/var/lib/postgresql/data
+
+  redis:
+    restart: unless-stopped
+    image: redis:4.0.9
+    environment:
+      - REDIS_EXTRA_FLAGS=--maxmemory 100mb
+    volumes:
+      - ./data/redis:/data
+    command: ["redis-server", "--appendonly", "yes"]
+
+  mq:
+    image: nats:1.1.0-linux
+    ports:
+      - "8222:8222"
+    volumes:
+      - ./log/mq:/var/log/mq
+    command: ['-m', '8222', '-DV', '-l', '/var/log/mq/log.log']
+
+  ### Web GUI for databases
+  adminer:
+    image: adminer:4.6.2-standalone
+    links:
+      - postgres:db
+    ports:
+      - "8080:8080"
+    environment:
+      - ADMINER_DEFAULT_SERVER=postgres
+    depends_on:
+      - postgres
+    restart: always
+
+  ### Logging tools, ELK stack
+  logstash:
+    image: docker.elastic.co/logstash/logstash:6.3.0
+    links:
+      - elasticsearch
+    volumes:
+      - ./elk/logstash/conf:/etc/logstash/conf.d
+#    command: ["/bin/logstash -f /etc/logstash/conf.d/logstash-python.conf"]
+#    command: ["ls", "/etc/logstash/conf.d"]
+#    command: ["bin/logstash", "-f", "/etc/logstash/conf.d/logstash-python.conf"]
+    command: logstash -f /etc/logstash/conf.d/logstash-python.conf
+#    ports:
+#      - "5959:5959"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:6.3.0
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:6.3.0
+    links:
+      - elasticsearch
+    depends_on:
+      - elasticsearch
+      - logstash
+    ports:
+      - "5601:5601"
